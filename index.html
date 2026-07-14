@@ -253,11 +253,13 @@
       const sound = {
         context: null,
         output: null,
-        lastStrike: [],
-        lastGlobal: 0,
-        voices: 0,
-        scale: [523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1174.66, 1318.51, 1567.98, 1760]
-      };
+         lastStrike: [],
+         lastGlobal: 0,
+         voices: 0,
+         strikes: 0,
+         cuePlayed: false,
+         scale: [523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1174.66, 1318.51, 1567.98, 1760]
+       };
       let width = 0;
       let height = 0;
       let dpr = 1;
@@ -290,7 +292,59 @@
           sound.context = context;
           sound.output = output;
         }
-        if (sound.context.state === 'suspended') sound.context.resume().catch(() => {});
+        const markReady = () => {
+          document.documentElement.dataset.audioState = sound.context.state;
+          if (sound.context.state !== 'running' || sound.cuePlayed) return;
+          sound.cuePlayed = true;
+          ringBell(783.99, .052, 1.05, -.08);
+          ringBell(1046.5, .038, .9, .08, .13);
+        };
+
+        if (sound.context.state === 'suspended') {
+          sound.context.resume().then(markReady).catch(() => {});
+        } else {
+          markReady();
+        }
+      }
+
+      function ringBell(frequency, level, duration, pan = 0, delay = 0) {
+        const context = sound.context;
+        if (!context || context.state !== 'running' || sound.voices >= 10) return;
+
+        sound.voices += 1;
+        sound.strikes += 1;
+        document.documentElement.dataset.bellStrikes = String(sound.strikes);
+
+        const start = context.currentTime + delay;
+        const spatial = context.createStereoPanner ? context.createStereoPanner() : context.createGain();
+        if (spatial.pan) spatial.pan.setValueAtTime(pan, start);
+        spatial.connect(sound.output);
+
+        [
+          { ratio: 1, amount: 1, decay: 1 },
+          { ratio: 2.01, amount: .38, decay: .82 },
+          { ratio: 2.71, amount: .22, decay: .68 },
+          { ratio: 4.07, amount: .12, decay: .45 },
+          { ratio: 5.43, amount: .07, decay: .32 }
+        ].forEach(partial => {
+          const oscillator = context.createOscillator();
+          const envelope = context.createGain();
+          oscillator.type = 'sine';
+          oscillator.frequency.setValueAtTime(frequency * partial.ratio, start);
+          oscillator.detune.setValueAtTime((Math.random() - .5) * 7, start);
+          envelope.gain.setValueAtTime(.0001, start);
+          envelope.gain.exponentialRampToValueAtTime(level * partial.amount, start + .006);
+          envelope.gain.exponentialRampToValueAtTime(.0001, start + duration * partial.decay);
+          oscillator.connect(envelope);
+          envelope.connect(spatial);
+          oscillator.start(start);
+          oscillator.stop(start + duration + .08);
+        });
+
+        window.setTimeout(() => {
+          sound.voices = Math.max(0, sound.voices - 1);
+          spatial.disconnect();
+        }, (delay + duration + .18) * 1000);
       }
 
       function strikeChain(columnIndex, impact, x) {
@@ -303,39 +357,11 @@
 
         sound.lastStrike[columnIndex] = timestamp;
         sound.lastGlobal = timestamp;
-        sound.voices += 1;
-
-        const now = context.currentTime;
         const frequency = sound.scale[columnIndex % sound.scale.length];
         const level = .028 + Math.min(impact, 18) / 18 * .075;
         const duration = .72 + Math.random() * .32;
-        const spatial = context.createStereoPanner ? context.createStereoPanner() : context.createGain();
         const pan = Math.max(-.9, Math.min(.9, x / width * 2 - 1));
-        if (spatial.pan) spatial.pan.setValueAtTime(pan, now);
-        spatial.connect(sound.output);
-
-        [
-          { ratio: 1, amount: 1, decay: 1 },
-          { ratio: 2.01, amount: .24, decay: .62 },
-          { ratio: 3.96, amount: .1, decay: .38 }
-        ].forEach(partial => {
-          const oscillator = context.createOscillator();
-          const envelope = context.createGain();
-          oscillator.type = 'sine';
-          oscillator.frequency.setValueAtTime(frequency * partial.ratio, now);
-          oscillator.detune.setValueAtTime((Math.random() - .5) * 8, now);
-          envelope.gain.setValueAtTime(level * partial.amount, now);
-          envelope.gain.exponentialRampToValueAtTime(.0001, now + duration * partial.decay);
-          oscillator.connect(envelope);
-          envelope.connect(spatial);
-          oscillator.start(now);
-          oscillator.stop(now + duration + .05);
-        });
-
-        window.setTimeout(() => {
-          sound.voices = Math.max(0, sound.voices - 1);
-          spatial.disconnect();
-        }, (duration + .15) * 1000);
+        ringBell(frequency, level, duration, pan);
       }
 
       function build() {
